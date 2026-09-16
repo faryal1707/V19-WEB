@@ -1,0 +1,307 @@
+openapi: 3.1.0
+info:
+  title: East West Logistics V19 API
+  version: 19.0.0
+  description: Production contract for public capacity/load/onboarding, authenticated client portal, and Operations/Admin workflows.
+servers:
+  - url: https://api.eastandwestlogistics.com
+  - url: http://localhost:8787
+paths:
+  /healthz:
+    get: {summary: Health check, responses: {'200': {description: Healthy}}}
+  /api/v1/capacity:
+    get:
+      summary: Search current public capacity
+      parameters:
+        - {in: query, name: origin, schema: {type: string}, example: 'Dallas, TX'}
+        - {in: query, name: radiusMiles, schema: {type: integer, minimum: 1, maximum: 1000, default: 250}}
+        - {in: query, name: availableDate, schema: {type: string, format: date}}
+        - {in: query, name: equipment, schema: {$ref: '#/components/schemas/EquipmentType'}}
+      responses:
+        '200': {description: Capacity results, content: {application/json: {schema: {$ref: '#/components/schemas/CapacityResponse'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '422': {description: Origin could not be geocoded}
+  /api/v1/load-requests:
+    post:
+      summary: Persist broker load request
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/LoadRequestInput'}}}}
+      responses:
+        '201': {description: Persisted, content: {application/json: {schema: {$ref: '#/components/schemas/ReferenceReceipt'}}}}
+        '200': {description: Idempotent replay, content: {application/json: {schema: {$ref: '#/components/schemas/ReferenceReceipt'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {description: Capacity conflict or equipment mismatch}
+  /api/v1/onboarding/applications:
+    post:
+      summary: Persist carrier onboarding application and consent records
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/OnboardingInput'}}}}
+      responses:
+        '201': {description: Persisted application}
+        '200': {description: Idempotent replay}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {description: Potential duplicate MC application}
+  /api/v1/auth/login:
+    post:
+      summary: Authenticate and create opaque server-side session
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/LoginInput'}}}}
+      responses:
+        '200': {description: Authenticated; response includes synchronizer CSRF token}
+        '401': {description: Invalid credentials or MFA challenge}
+  /api/v1/auth/csrf:
+    get:
+      summary: Rotate and return synchronizer CSRF token for authenticated browser session
+      security: [{cookieSession: []}]
+      responses: {'200': {description: CSRF token}, '401': {$ref: '#/components/responses/Unauthorized'}}
+  /api/v1/auth/logout:
+    post:
+      summary: Revoke current session
+      security: [{cookieSession: []}]
+      parameters: [{$ref: '#/components/parameters/CsrfToken'}]
+      responses: {'204': {description: Logged out}, '403': {$ref: '#/components/responses/Forbidden'}}
+  /api/v1/auth/me:
+    get:
+      summary: Current user, MFA state and memberships
+      security: [{cookieSession: []}]
+      responses: {'200': {description: Current session}, '401': {$ref: '#/components/responses/Unauthorized'}}
+  /api/v1/auth/mfa/setup:
+    post:
+      summary: Create time-limited TOTP enrollment secret for current user
+      security: [{cookieSession: []}]
+      parameters: [{$ref: '#/components/parameters/CsrfToken'}]
+      responses: {'200': {description: TOTP secret and otpauth URI}, '403': {$ref: '#/components/responses/Forbidden'}}
+  /api/v1/auth/mfa/confirm:
+    post:
+      summary: Confirm TOTP enrollment and mark current session MFA-verified
+      security: [{cookieSession: []}]
+      parameters: [{$ref: '#/components/parameters/CsrfToken'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [code], properties: {code: {type: string, pattern: '^[0-9]{6}$'}}}}}}
+      responses: {'200': {description: MFA enabled}, '400': {$ref: '#/components/responses/BadRequest'}}
+  /api/v1/auth/forgot-password:
+    post:
+      summary: Queue reset email when account exists; always return generic public response
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [email], properties: {email: {type: string, format: email}}}}}}
+      responses: {'200': {description: Generic response}}
+  /api/v1/auth/reset-password:
+    post:
+      summary: Complete password reset and revoke existing sessions
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [token,password], properties: {token: {type: string}, password: {type: string, minLength: 12}}}}}}
+      responses: {'200': {description: Password changed}, '400': {$ref: '#/components/responses/BadRequest'}}
+  /api/v1/auth/activate:
+    post:
+      summary: Accept account invitation and create/activate user
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [token,password,displayName], properties: {token: {type: string}, password: {type: string, minLength: 12}, displayName: {type: string}}}}}}
+      responses: {'200': {description: Activated}, '400': {$ref: '#/components/responses/BadRequest'}}
+  /api/v1/admin/capacity:
+    get:
+      summary: List active/archived-visible Operations capacity records
+      security: [{cookieSession: []}]
+      responses: {'200': {description: Capacity rows}, '403': {$ref: '#/components/responses/Forbidden'}}
+    post:
+      summary: Create production capacity record
+      security: [{cookieSession: []}]
+      parameters: [{$ref: '#/components/parameters/CsrfToken'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AdminCapacityInput'}}}}
+      responses: {'201': {description: Created}, '400': {$ref: '#/components/responses/BadRequest'}, '403': {$ref: '#/components/responses/Forbidden'}}
+  /api/v1/admin/capacity/{id}:
+    parameters: [{$ref: '#/components/parameters/Id'}]
+    get:
+      summary: Get capacity record
+      security: [{cookieSession: []}]
+      responses: {'200': {description: Record}, '404': {$ref: '#/components/responses/NotFound'}}
+    patch:
+      summary: Update capacity record/status; BOOKED/HOLD/INACTIVE/EXPIRED immediately stop qualifying as public available
+      security: [{cookieSession: []}]
+      parameters: [{$ref: '#/components/parameters/CsrfToken'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AdminCapacityInput'}}}}
+      responses: {'200': {description: Updated}, '404': {$ref: '#/components/responses/NotFound'}}
+    delete:
+      summary: Soft-archive capacity
+      security: [{cookieSession: []}]
+      parameters: [{$ref: '#/components/parameters/CsrfToken'}]
+      responses: {'204': {description: Archived}, '404': {$ref: '#/components/responses/NotFound'}}
+  /api/v1/admin/load-requests:
+    get:
+      summary: List persisted broker load requests
+      security: [{cookieSession: []}]
+      responses: {'200': {description: Rows}}
+  /api/v1/admin/load-requests/{id}:
+    get:
+      summary: Load request detail
+      security: [{cookieSession: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses: {'200': {description: Detail}, '404': {$ref: '#/components/responses/NotFound'}}
+  /api/v1/admin/load-requests/{id}/status:
+    patch:
+      summary: Update load request status
+      security: [{cookieSession: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}, {$ref: '#/components/parameters/CsrfToken'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [status], properties: {status: {type: string, enum: [RECEIVED,REVIEWING,ACCEPTED,DECLINED,CANCELLED]}}}}}}
+      responses: {'200': {description: Updated}}
+  /api/v1/admin/applications:
+    get:
+      summary: List onboarding applications
+      security: [{cookieSession: []}]
+      responses: {'200': {description: Rows}}
+  /api/v1/admin/clients:
+    get:
+      summary: Admin-only client organizations
+      security: [{cookieSession: []}]
+      responses: {'200': {description: Organizations}}
+  /api/v1/admin/clients/{organizationId}/invitations:
+    post:
+      summary: Create client/operations/admin account invitation
+      security: [{cookieSession: []}]
+      parameters:
+        - {in: path, name: organizationId, required: true, schema: {type: string, format: uuid}}
+        - {$ref: '#/components/parameters/CsrfToken'}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [email,role], properties: {email: {type: string, format: email}, role: {type: string, enum: [CLIENT,OPERATIONS,ADMIN]}}}}}}
+      responses: {'201': {description: Invitation queued}, '404': {$ref: '#/components/responses/NotFound'}}
+  /api/v1/admin/audit:
+    get:
+      summary: Admin-only audit trail
+      security: [{cookieSession: []}]
+      responses: {'200': {description: Audit rows}}
+  /api/v1/portal/{organizationId}/dashboard:
+    get:
+      summary: Tenant-isolated dashboard metrics and action items
+      security: [{cookieSession: []}]
+      parameters:
+        - {$ref: '#/components/parameters/OrganizationId'}
+        - {in: query, name: from, schema: {type: string, format: date}}
+        - {in: query, name: to, schema: {type: string, format: date}}
+      responses: {'200': {description: Dashboard}, '404': {$ref: '#/components/responses/NotFound'}}
+  /api/v1/portal/{organizationId}/loads:
+    get:
+      summary: Tenant-isolated load list
+      security: [{cookieSession: []}]
+      parameters: [{$ref: '#/components/parameters/OrganizationId'}]
+      responses: {'200': {description: Loads}, '404': {$ref: '#/components/responses/NotFound'}}
+  /api/v1/portal/{organizationId}/loads/{loadId}:
+    get:
+      summary: Tenant-isolated load detail
+      security: [{cookieSession: []}]
+      parameters:
+        - {$ref: '#/components/parameters/OrganizationId'}
+        - {in: path, name: loadId, required: true, schema: {type: string, format: uuid}}
+      responses: {'200': {description: Load}, '404': {$ref: '#/components/responses/NotFound'}}
+  /api/v1/portal/{organizationId}/documents:
+    get:
+      summary: Tenant-isolated document metadata
+      security: [{cookieSession: []}]
+      parameters: [{$ref: '#/components/parameters/OrganizationId'}]
+      responses: {'200': {description: Documents}}
+  /api/v1/portal/{organizationId}/reports:
+    get:
+      summary: Tenant-isolated report snapshots used by UI and CSV export
+      security: [{cookieSession: []}]
+      parameters: [{$ref: '#/components/parameters/OrganizationId'}]
+      responses: {'200': {description: Reports}}
+  /api/v1/rum/web-vitals:
+    post:
+      summary: Consent-gated, non-PII Web Vitals sample ingestion
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/WebVitalInput'}}}}
+      responses: {'202': {description: Accepted}, '400': {$ref: '#/components/responses/BadRequest'}}
+components:
+  securitySchemes:
+    cookieSession: {type: apiKey, in: cookie, name: __Host-ewl_session}
+  parameters:
+    Id: {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    OrganizationId: {in: path, name: organizationId, required: true, schema: {type: string, format: uuid}}
+    IdempotencyKey: {in: header, name: Idempotency-Key, required: true, schema: {type: string, minLength: 12, maxLength: 120}}
+    CsrfToken: {in: header, name: X-CSRF-Token, required: true, schema: {type: string}, description: Synchronizer token returned by login or /auth/csrf.}
+  responses:
+    BadRequest: {description: Validation or request error}
+    Unauthorized: {description: Authentication required}
+    Forbidden: {description: Authorization, MFA, or CSRF requirement not met}
+    NotFound: {description: Resource not found or intentionally hidden by tenant isolation}
+  schemas:
+    EquipmentType: {type: string, enum: [POWER_ONLY,DRY_VAN,FLATBED,STEP_DECK,CONESTOGA,REEFER,BOX_TRUCK,OTHER]}
+    CapacityStatus: {type: string, enum: [AVAILABLE,AVAILABLE_SOON,HOLD,BOOKED,INACTIVE,EXPIRED]}
+    CapacityResponse:
+      type: object
+      required: [data,meta]
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+            required: [id,equipmentType,displayEquipment,location,availableAt,status,updatedAt,stale]
+            properties:
+              id: {type: string, format: uuid}
+              equipmentType: {$ref: '#/components/schemas/EquipmentType'}
+              displayEquipment: {type: string}
+              location: {type: object, required: [city,state,lat,lng], properties: {city: {type: string}, state: {type: string}, lat: {type: number}, lng: {type: number}}}
+              availableAt: {type: string, format: date-time}
+              preferredDirections: {type: array, items: {type: string}}
+              status: {type: string, enum: [AVAILABLE,AVAILABLE_SOON]}
+              publicNotes: {type: [string,'null']}
+              updatedAt: {type: string, format: date-time}
+              stale: {type: boolean}
+              distanceMiles: {type: [number,'null']}
+        meta: {type: object}
+    LoadRequestInput:
+      type: object
+      required: [capacityId,origin,destination,pickupAt,equipmentType,broker,transactionalContactAcknowledged]
+      properties:
+        capacityId: {type: string, format: uuid}
+        origin: {type: object, required: [display], properties: {display: {type: string}}}
+        destination: {type: object, required: [display], properties: {display: {type: string}}}
+        pickupAt: {type: string, format: date-time}
+        deliveryAt: {type: [string,'null'], format: date-time}
+        equipmentType: {$ref: '#/components/schemas/EquipmentType'}
+        weightLbs: {type: [integer,'null'], minimum: 1, maximum: 100000}
+        commodity: {type: [string,'null'], maxLength: 200}
+        offeredRateUsdCents: {type: [integer,'null'], minimum: 0}
+        broker: {type: object, required: [company,contactName,phone,email], properties: {company: {type: string}, contactName: {type: string}, phone: {type: string}, email: {type: string, format: email}}}
+        notes: {type: [string,'null'], maxLength: 2000}
+        transactionalContactAcknowledged: {type: boolean, const: true}
+    ReferenceReceipt:
+      type: object
+      required: [id,referenceNumber,status,receivedAt]
+      properties: {id: {type: string, format: uuid}, referenceNumber: {type: string}, status: {type: string}, receivedAt: {type: string, format: date-time}}
+    LoginInput:
+      type: object
+      required: [email,password]
+      properties: {email: {type: string, format: email}, password: {type: string}, mfaCode: {type: string, pattern: '^[0-9]{6}$'}}
+    AdminCapacityInput:
+      type: object
+      required: [equipmentType,displayEquipment,city,state,availableAt]
+      properties:
+        truckId: {type: [string,'null'], format: uuid}
+        internalUnitReference: {type: [string,'null']}
+        equipmentType: {$ref: '#/components/schemas/EquipmentType'}
+        displayEquipment: {type: string}
+        city: {type: string}
+        state: {type: string}
+        latitude: {type: number, minimum: -90, maximum: 90}
+        longitude: {type: number, minimum: -180, maximum: 180}
+        availableAt: {type: string, format: date-time}
+        preferredDirections: {type: array, items: {type: string}}
+        status: {$ref: '#/components/schemas/CapacityStatus'}
+        publicNotes: {type: [string,'null']}
+        internalNotes: {type: [string,'null']}
+    OnboardingInput:
+      type: object
+      required: [company,fleet,operations,plan,consent]
+      properties:
+        company:
+          type: object
+          required: [legalName,mcNumber,primaryContact,email,phone]
+          properties: {legalName: {type: string}, dba: {type: [string,'null']}, mcNumber: {type: string}, dotNumber: {type: [string,'null']}, primaryContact: {type: string}, email: {type: string, format: email}, phone: {type: string}}
+        fleet:
+          type: object
+          required: [truckCount,equipmentTypes]
+          properties: {truckCount: {type: integer, minimum: 1}, equipmentTypes: {type: array, minItems: 1, items: {$ref: '#/components/schemas/EquipmentType'}}, unitDetails: {type: array, items: {type: object}}}
+        operations:
+          type: object
+          properties: {typicalLocation: {type: [string,'null']}, preferredLanes: {type: [string,'null']}, avoidRegions: {type: [string,'null']}, homeTimePreferences: {type: [string,'null']}, driverMode: {type: string, enum: [SOLO,TEAM,MIXED,UNKNOWN]}, notes: {type: [string,'null']}}
+        plan: {type: string, enum: [CORE,PREMIUM,CUSTOM]}
+        consent:
+          type: object
+          required: [privacyAcknowledged,termsAccepted,transactionalEmail,disclosureVersion,disclosureText]
+          properties: {privacyAcknowledged: {type: boolean, const: true}, termsAccepted: {type: boolean, const: true}, transactionalEmail: {type: boolean, const: true}, transactionalSms: {type: boolean}, marketingEmail: {type: boolean}, marketingSms: {type: boolean}, disclosureVersion: {type: string}, disclosureText: {type: string}}
+    WebVitalInput:
+      type: object
+      required: [name,value,pagePath]
+      properties: {name: {type: string, enum: [LCP,INP,CLS]}, value: {type: number, minimum: 0}, rating: {type: string, enum: [good,needs-improvement,poor]}, navigationType: {type: string}, pagePath: {type: string, pattern: '^/'}}
